@@ -22,12 +22,17 @@ namespace aidl::android::hardware::audio::core {
 
 class ModuleRemoteSubmix : public Module {
   public:
-    ModuleRemoteSubmix() : Module(Type::R_SUBMIX) {}
+    ModuleRemoteSubmix(std::unique_ptr<Configuration>&& config)
+        : Module(Type::R_SUBMIX, std::move(config)) {}
 
   private:
     // IModule interfaces
     ndk::ScopedAStatus getMicMute(bool* _aidl_return) override;
     ndk::ScopedAStatus setMicMute(bool in_mute) override;
+    ndk::ScopedAStatus setAudioPortConfig(
+            const ::aidl::android::media::audio::common::AudioPortConfig& in_requested,
+            ::aidl::android::media::audio::common::AudioPortConfig* out_suggested,
+            bool* _aidl_return) override;
 
     // Module interfaces
     ndk::ScopedAStatus createInputStream(
@@ -42,13 +47,17 @@ class ModuleRemoteSubmix : public Module {
                     offloadInfo,
             std::shared_ptr<StreamOut>* result) override;
     ndk::ScopedAStatus populateConnectedDevicePort(
-            ::aidl::android::media::audio::common::AudioPort* audioPort) override;
+            ::aidl::android::media::audio::common::AudioPort* audioPort,
+            int32_t nextPortId) override;
     ndk::ScopedAStatus checkAudioPatchEndpointsMatch(
             const std::vector<::aidl::android::media::audio::common::AudioPortConfig*>& sources,
             const std::vector<::aidl::android::media::audio::common::AudioPortConfig*>& sinks)
             override;
     ndk::ScopedAStatus onMasterMuteChanged(bool mute) override;
     ndk::ScopedAStatus onMasterVolumeChanged(float volume) override;
+    int32_t getNominalLatencyMs(
+            const ::aidl::android::media::audio::common::AudioPortConfig& portConfig) override;
+    binder_status_t dump(int fd, const char** args, uint32_t numArgs) override;
 };
 
 }  // namespace aidl::android::hardware::audio::core

@@ -68,6 +68,18 @@ Health::Health(std::string_view instance_name, std::unique_ptr<struct healthd_co
 
 Health::~Health() {}
 
+static inline ndk::ScopedAStatus TranslateStatus(::android::status_t err) {
+    switch (err) {
+        case ::android::OK:
+            return ndk::ScopedAStatus::ok();
+        case ::android::NAME_NOT_FOUND:
+            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+        default:
+            return ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(
+                    IHealth::STATUS_UNKNOWN, ::android::statusToString(err).c_str());
+    }
+}
+
 //
 // Getters.
 //
@@ -84,16 +96,7 @@ static ndk::ScopedAStatus GetProperty(::android::BatteryMonitor* monitor, int id
         LOG(DEBUG) << "getProperty(" << id << ")"
                    << " fails: (" << err << ") " << ::android::statusToString(err);
     }
-
-    switch (err) {
-        case ::android::OK:
-            return ndk::ScopedAStatus::ok();
-        case ::android::NAME_NOT_FOUND:
-            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
-        default:
-            return ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(
-                    IHealth::STATUS_UNKNOWN, ::android::statusToString(err).c_str());
-    }
+    return TranslateStatus(err);
 }
 
 ndk::ScopedAStatus Health::getChargeCounterUah(int32_t* out) {
@@ -159,6 +162,21 @@ ndk::ScopedAStatus Health::getBatteryHealthData(BatteryHealthData* out) {
         !res.isOk()) {
         LOG(WARNING) << "Cannot get Battery_state_of_health: " << res.getDescription();
     }
+    if (auto res = battery_monitor_.getSerialNumber(&out->batterySerialNumber);
+        res != ::android::OK) {
+        LOG(WARNING) << "Cannot get Battery_serial_number: "
+                     << TranslateStatus(res).getDescription();
+    }
+
+    int64_t part_status = static_cast<int64_t>(BatteryPartStatus::UNSUPPORTED);
+    if (auto res = GetProperty<int64_t>(&battery_monitor_, ::android::BATTERY_PROP_PART_STATUS,
+                                        static_cast<int64_t>(BatteryPartStatus::UNSUPPORTED),
+                                        &part_status);
+        !res.isOk()) {
+        LOG(WARNING) << "Cannot get Battery_part_status: " << res.getDescription();
+    }
+    out->batteryPartStatus = static_cast<BatteryPartStatus>(part_status);
+
     return ndk::ScopedAStatus::ok();
 }
 
@@ -220,6 +238,7 @@ binder_status_t Health::dump(int fd, const char**, uint32_t) {
     } else {
         ::android::base::WriteStringToFd(res.getDescription(), fd);
     }
+    ::android::base::WriteStringToFd("\n", fd);
 
     fsync(fd);
     return STATUS_OK;
@@ -240,15 +259,6 @@ std::optional<bool> Health::ShouldKeepScreenOn() {
     convert(health_info, &props);
     return healthd_config_->screen_on(&props);
 }
-
-namespace {
-bool IsDeadObjectLogged(const ndk::ScopedAStatus& ret) {
-    if (ret.isOk()) return false;
-    if (ret.getStatus() == ::STATUS_DEAD_OBJECT) return true;
-    LOG(ERROR) << "Cannot call healthInfoChanged on callback: " << ret.getDescription();
-    return false;
-}
-}  // namespace
 
 //
 // Subclass helpers / overrides
@@ -278,11 +288,11 @@ ndk::ScopedAStatus Health::registerCallback(const std::shared_ptr<IHealthInfoCal
 
     {
         std::lock_guard<decltype(callbacks_lock_)> lock(callbacks_lock_);
-        LinkedCallback* linked_callback_result = LinkedCallback::Make(ref<Health>(), callback);
-        if (!linked_callback_result) {
-            return ndk::ScopedAStatus::fromStatus(STATUS_UNEXPECTED_NULL);
+        auto linked_callback_result = LinkedCallback::Make(ref<Health>(), callback);
+        if (!linked_callback_result.ok()) {
+            return ndk::ScopedAStatus::fromStatus(-linked_callback_result.error().code());
         }
-        callbacks_[linked_callback_result] = callback;
+        callbacks_[*linked_callback_result] = callback;
         // unlock
     }
 
@@ -293,8 +303,10 @@ ndk::ScopedAStatus Health::registerCallback(const std::shared_ptr<IHealthInfoCal
         return ndk::ScopedAStatus::ok();
     }
 
-    if (auto res = callback->healthInfoChanged(health_info); IsDeadObjectLogged(res)) {
-        (void)unregisterCallback(callback);
+    auto res = callback->healthInfoChanged(health_info);
+    if (!res.isOk()) {
+        LOG(DEBUG) << "Cannot call healthInfoChanged:" << res.getDescription()
+                   << ". Do nothing here if callback is dead as it will be cleaned up later.";
     }
     return ndk::ScopedAStatus::ok();
 }
@@ -353,18 +365,11 @@ ndk::ScopedAStatus Health::update() {
 void Health::OnHealthInfoChanged(const HealthInfo& health_info) {
     // Notify all callbacks
     std::unique_lock<decltype(callbacks_lock_)> lock(callbacks_lock_);
-    for (auto it = callbacks_.begin(); it != callbacks_.end();) {
-        auto res = it->second->healthInfoChanged(health_info);
-        if (IsDeadObjectLogged(res)) {
-            // if it's dead, remove it
-            it = callbacks_.erase(it);
-        } else {
-            it++;
-            if (!res.isOk()) {
-                LOG(DEBUG)
-                        << "Cannot call healthInfoChanged:" << res.getDescription()
-                        << ". Do nothing here if callback is dead as it will be cleaned up later.";
-            }
+    for (const auto& [_, callback] : callbacks_) {
+        auto res = callback->healthInfoChanged(health_info);
+        if (!res.isOk()) {
+            LOG(DEBUG) << "Cannot call healthInfoChanged:" << res.getDescription()
+                       << ". Do nothing here if callback is dead as it will be cleaned up later.";
         }
     }
     lock.unlock();

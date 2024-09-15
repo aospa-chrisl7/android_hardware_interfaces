@@ -16,7 +16,6 @@
 
 #include <unordered_set>
 
-#include <aidl/Vintf.h>
 #include <aidl/android/hardware/audio/effect/NoiseSuppression.h>
 #define LOG_TAG "VtsHalNSParamTest"
 #include <android-base/logging.h>
@@ -32,6 +31,7 @@ using aidl::android::hardware::audio::effect::IEffect;
 using aidl::android::hardware::audio::effect::IFactory;
 using aidl::android::hardware::audio::effect::NoiseSuppression;
 using aidl::android::hardware::audio::effect::Parameter;
+using android::hardware::audio::common::testing::detail::TestExecutionTracer;
 
 enum ParamName { PARAM_INSTANCE_NAME, PARAM_LEVEL, PARAM_TYPE };
 using NSParamTestParam = std::tuple<std::pair<std::shared_ptr<IFactory>, Descriptor>,
@@ -49,7 +49,7 @@ class NSParamTest : public ::testing::TestWithParam<NSParamTestParam>, public Ef
         ASSERT_NO_FATAL_FAILURE(create(mFactory, mEffect, mDescriptor));
 
         std::optional<Parameter::Specific> specific = getDefaultParamSpecific();
-        Parameter::Common common = EffectHelper::createParamCommon(
+        Parameter::Common common = createParamCommon(
                 0 /* session */, 1 /* ioHandle */, 44100 /* iSampleRate */, 44100 /* oSampleRate */,
                 kInputFrameCount /* iFrameCount */, kOutputFrameCount /* oFrameCount */);
         IEffect::OpenEffectReturn ret;
@@ -171,6 +171,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(NSParamTest);
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new TestExecutionTracer());
     ABinderProcess_setThreadPoolMaxThreadCount(1);
     ABinderProcess_startThreadPool();
     return RUN_ALL_TESTS();

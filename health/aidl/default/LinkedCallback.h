@@ -20,6 +20,7 @@
 
 #include <aidl/android/hardware/health/IHealthInfoCallback.h>
 #include <android-base/macros.h>
+#include <android-base/result.h>
 #include <android/binder_auto_utils.h>
 
 #include <health-impl/Health.h>
@@ -33,9 +34,8 @@ class LinkedCallback {
     // Automatically linkToDeath upon construction with the returned object as the cookie.
     // The deathRecipient owns the LinkedCallback object and will delete it with
     // cookie when it's unlinked.
-    static LinkedCallback* Make(std::shared_ptr<Health> service,
-                                std::shared_ptr<IHealthInfoCallback> callback);
-
+    static ::android::base::Result<LinkedCallback*> Make(
+            std::shared_ptr<Health> service, std::shared_ptr<IHealthInfoCallback> callback);
     // On callback died, unreigster it from the service.
     void OnCallbackDied();
 

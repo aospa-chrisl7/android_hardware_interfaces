@@ -14,15 +14,29 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "AHAL_BluetoothPortProxy"
+#define LOG_TAG "AHAL_BluetoothAudioPort"
 
 #include <android-base/logging.h>
 #include <android-base/stringprintf.h>
 #include <audio_utils/primitives.h>
-#include <inttypes.h>
 #include <log/log.h>
 
+#include "BluetoothAudioSessionControl.h"
 #include "core-impl/DevicePortProxy.h"
+
+using aidl::android::hardware::audio::common::SinkMetadata;
+using aidl::android::hardware::audio::common::SourceMetadata;
+using aidl::android::hardware::bluetooth::audio::AudioConfiguration;
+using aidl::android::hardware::bluetooth::audio::BluetoothAudioSessionControl;
+using aidl::android::hardware::bluetooth::audio::BluetoothAudioStatus;
+using aidl::android::hardware::bluetooth::audio::ChannelMode;
+using aidl::android::hardware::bluetooth::audio::PcmConfiguration;
+using aidl::android::hardware::bluetooth::audio::PortStatusCallbacks;
+using aidl::android::hardware::bluetooth::audio::PresentationPosition;
+using aidl::android::hardware::bluetooth::audio::SessionType;
+using aidl::android::media::audio::common::AudioDeviceDescription;
+using aidl::android::media::audio::common::AudioDeviceType;
+using android::base::StringPrintf;
 
 namespace android::bluetooth::audio::aidl {
 
@@ -32,20 +46,6 @@ namespace {
 constexpr unsigned int kMaxWaitingTimeMs = 4500;
 
 }  // namespace
-
-using ::aidl::android::hardware::audio::common::SinkMetadata;
-using ::aidl::android::hardware::audio::common::SourceMetadata;
-using ::aidl::android::hardware::bluetooth::audio::AudioConfiguration;
-using ::aidl::android::hardware::bluetooth::audio::BluetoothAudioSessionControl;
-using ::aidl::android::hardware::bluetooth::audio::BluetoothAudioStatus;
-using ::aidl::android::hardware::bluetooth::audio::ChannelMode;
-using ::aidl::android::hardware::bluetooth::audio::PcmConfiguration;
-using ::aidl::android::hardware::bluetooth::audio::PortStatusCallbacks;
-using ::aidl::android::hardware::bluetooth::audio::PresentationPosition;
-using ::aidl::android::hardware::bluetooth::audio::SessionType;
-using ::aidl::android::media::audio::common::AudioDeviceDescription;
-using ::aidl::android::media::audio::common::AudioDeviceType;
-using ::android::base::StringPrintf;
 
 std::ostream& operator<<(std::ostream& os, const BluetoothStreamState& state) {
     switch (state) {
@@ -254,12 +254,7 @@ bool BluetoothAudioPortAidl::inUse() const {
     return (mCookie != ::aidl::android::hardware::bluetooth::audio::kObserversCookieUndefined);
 }
 
-bool BluetoothAudioPortAidl::getPreferredDataIntervalUs(size_t* interval_us) const {
-    if (!interval_us) {
-        LOG(ERROR) << __func__ << ": bad input arg";
-        return false;
-    }
-
+bool BluetoothAudioPortAidl::getPreferredDataIntervalUs(size_t& interval_us) const {
     if (!inUse()) {
         LOG(ERROR) << __func__ << ": BluetoothAudioPortAidl is not in use";
         return false;
@@ -272,16 +267,11 @@ bool BluetoothAudioPortAidl::getPreferredDataIntervalUs(size_t* interval_us) con
         return false;
     }
 
-    *interval_us = hal_audio_cfg.get<AudioConfiguration::pcmConfig>().dataIntervalUs;
+    interval_us = hal_audio_cfg.get<AudioConfiguration::pcmConfig>().dataIntervalUs;
     return true;
 }
 
-bool BluetoothAudioPortAidl::loadAudioConfig(PcmConfiguration* audio_cfg) const {
-    if (!audio_cfg) {
-        LOG(ERROR) << __func__ << ": bad input arg";
-        return false;
-    }
-
+bool BluetoothAudioPortAidl::loadAudioConfig(PcmConfiguration& audio_cfg) {
     if (!inUse()) {
         LOG(ERROR) << __func__ << ": BluetoothAudioPortAidl is not in use";
         return false;
@@ -293,11 +283,22 @@ bool BluetoothAudioPortAidl::loadAudioConfig(PcmConfiguration* audio_cfg) const 
         LOG(ERROR) << __func__ << ": unsupported audio cfg tag";
         return false;
     }
-    *audio_cfg = hal_audio_cfg.get<AudioConfiguration::pcmConfig>();
+    audio_cfg = hal_audio_cfg.get<AudioConfiguration::pcmConfig>();
     LOG(VERBOSE) << __func__ << debugMessage() << ", state*=" << getState() << ", PcmConfig=["
-                 << audio_cfg->toString() << "]";
-    if (audio_cfg->channelMode == ChannelMode::UNKNOWN) {
+                 << audio_cfg.toString() << "]";
+    if (audio_cfg.channelMode == ChannelMode::UNKNOWN) {
         return false;
+    }
+    return true;
+}
+
+bool BluetoothAudioPortAidlOut::loadAudioConfig(PcmConfiguration& audio_cfg) {
+    if (!BluetoothAudioPortAidl::loadAudioConfig(audio_cfg)) return false;
+    // WAR to support Mono / 16 bits per sample as the Bluetooth stack requires
+    if (audio_cfg.channelMode == ChannelMode::MONO && audio_cfg.bitsPerSample == 16) {
+        mIsStereoToMono = true;
+        audio_cfg.channelMode = ChannelMode::STEREO;
+        LOG(INFO) << __func__ << ": force channels = to be AUDIO_CHANNEL_OUT_STEREO";
     }
     return true;
 }
@@ -435,7 +436,7 @@ bool BluetoothAudioPortAidl::suspend() {
                 retval = condWaitState(BluetoothStreamState::SUSPENDING);
             } else {
                 LOG(ERROR) << __func__ << debugMessage() << ", state=" << getState()
-                           << " Hal fails";
+                           << " failure to suspend stream";
             }
         }
     }

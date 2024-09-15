@@ -16,14 +16,15 @@
 
 #include <pthread.h>
 
+#define ATRACE_TAG ATRACE_TAG_AUDIO
 #define LOG_TAG "AHAL_Stream"
+#include <Utils.h>
 #include <android-base/logging.h>
 #include <android/binder_ibinder_platform.h>
+#include <cutils/properties.h>
 #include <utils/SystemClock.h>
+#include <utils/Trace.h>
 
-#include <Utils.h>
-
-#include "core-impl/Module.h"
 #include "core-impl/Stream.h"
 
 using aidl::android::hardware::audio::common::AudioOffloadMetadata;
@@ -90,6 +91,14 @@ bool StreamContext::isValid() const {
     return true;
 }
 
+void StreamContext::startStreamDataProcessor() {
+    auto streamDataProcessor = mStreamDataProcessor.lock();
+    if (streamDataProcessor != nullptr) {
+        streamDataProcessor->startDataProcessor(mSampleRate, getChannelCount(mChannelLayout),
+                                                mFormat);
+    }
+}
+
 void StreamContext::reset() {
     mCommandMQ.reset();
     mReplyMQ.reset();
@@ -130,7 +139,7 @@ void StreamWorkerCommonLogic::populateReply(StreamDescriptor::Reply* reply,
     reply->status = STATUS_OK;
     if (isConnected) {
         reply->observable.frames = mContext->getFrameCount();
-        reply->observable.timeNs = ::android::elapsedRealtimeNano();
+        reply->observable.timeNs = ::android::uptimeNanos();
         if (auto status = mDriver->refinePosition(&reply->observable); status == ::android::OK) {
             return;
         }
@@ -172,17 +181,22 @@ StreamInWorkerLogic::Status StreamInWorkerLogic::cycle() {
     StreamDescriptor::Reply reply{};
     reply.status = STATUS_BAD_VALUE;
     switch (command.getTag()) {
-        case Tag::halReservedExit:
-            if (const int32_t cookie = command.get<Tag::halReservedExit>();
-                cookie == (mContext->getInternalCommandCookie() ^ getTid())) {
+        case Tag::halReservedExit: {
+            const int32_t cookie = command.get<Tag::halReservedExit>();
+            StreamInWorkerLogic::Status status = Status::CONTINUE;
+            if (cookie == (mContext->getInternalCommandCookie() ^ getTid())) {
                 mDriver->shutdown();
                 setClosed();
-                // This is an internal command, no need to reply.
-                return Status::EXIT;
+                status = Status::EXIT;
             } else {
                 LOG(WARNING) << __func__ << ": EXIT command has a bad cookie: " << cookie;
             }
+            if (cookie != 0) {  // This is an internal command, no need to reply.
+                return status;
+            }
+            // `cookie == 0` can only occur in the context of a VTS test, need to reply.
             break;
+        }
         case Tag::getStatus:
             populateReply(&reply, mIsConnected);
             break;
@@ -301,13 +315,18 @@ StreamInWorkerLogic::Status StreamInWorkerLogic::cycle() {
 }
 
 bool StreamInWorkerLogic::read(size_t clientSize, StreamDescriptor::Reply* reply) {
+    ATRACE_CALL();
     StreamContext::DataMQ* const dataMQ = mContext->getDataMQ();
-    const size_t byteCount = std::min({clientSize, dataMQ->availableToWrite(), mDataBufferSize});
+    StreamContext::DataMQ::Error fmqError = StreamContext::DataMQ::Error::NONE;
+    std::string fmqErrorMsg;
+    const size_t byteCount = std::min(
+            {clientSize, dataMQ->availableToWrite(&fmqError, &fmqErrorMsg), mDataBufferSize});
+    CHECK(fmqError == StreamContext::DataMQ::Error::NONE) << fmqErrorMsg;
     const bool isConnected = mIsConnected;
     const size_t frameSize = mContext->getFrameSize();
     size_t actualFrameCount = 0;
     bool fatal = false;
-    int32_t latency = Module::kLatencyMs;
+    int32_t latency = mContext->getNominalLatencyMs();
     if (isConnected) {
         if (::android::status_t status = mDriver->transfer(mDataBuffer.get(), byteCount / frameSize,
                                                            &actualFrameCount, &latency);
@@ -392,17 +411,22 @@ StreamOutWorkerLogic::Status StreamOutWorkerLogic::cycle() {
     reply.status = STATUS_BAD_VALUE;
     using Tag = StreamDescriptor::Command::Tag;
     switch (command.getTag()) {
-        case Tag::halReservedExit:
-            if (const int32_t cookie = command.get<Tag::halReservedExit>();
-                cookie == (mContext->getInternalCommandCookie() ^ getTid())) {
+        case Tag::halReservedExit: {
+            const int32_t cookie = command.get<Tag::halReservedExit>();
+            StreamOutWorkerLogic::Status status = Status::CONTINUE;
+            if (cookie == (mContext->getInternalCommandCookie() ^ getTid())) {
                 mDriver->shutdown();
                 setClosed();
-                // This is an internal command, no need to reply.
-                return Status::EXIT;
+                status = Status::EXIT;
             } else {
                 LOG(WARNING) << __func__ << ": EXIT command has a bad cookie: " << cookie;
             }
+            if (cookie != 0) {  // This is an internal command, no need to reply.
+                return status;
+            }
+            // `cookie == 0` can only occur in the context of a VTS test, need to reply.
             break;
+        }
         case Tag::getStatus:
             populateReply(&reply, mIsConnected);
             break;
@@ -569,12 +593,16 @@ StreamOutWorkerLogic::Status StreamOutWorkerLogic::cycle() {
 }
 
 bool StreamOutWorkerLogic::write(size_t clientSize, StreamDescriptor::Reply* reply) {
+    ATRACE_CALL();
     StreamContext::DataMQ* const dataMQ = mContext->getDataMQ();
-    const size_t readByteCount = dataMQ->availableToRead();
+    StreamContext::DataMQ::Error fmqError = StreamContext::DataMQ::Error::NONE;
+    std::string fmqErrorMsg;
+    const size_t readByteCount = dataMQ->availableToRead(&fmqError, &fmqErrorMsg);
+    CHECK(fmqError == StreamContext::DataMQ::Error::NONE) << fmqErrorMsg;
     const size_t frameSize = mContext->getFrameSize();
     bool fatal = false;
-    int32_t latency = Module::kLatencyMs;
-    if (bool success = readByteCount > 0 ? dataMQ->read(&mDataBuffer[0], readByteCount) : true) {
+    int32_t latency = mContext->getNominalLatencyMs();
+    if (readByteCount > 0 ? dataMQ->read(&mDataBuffer[0], readByteCount) : true) {
         const bool isConnected = mIsConnected;
         LOG(VERBOSE) << __func__ << ": reading of " << readByteCount << " bytes from data MQ"
                      << " succeeded; connected? " << isConnected;
@@ -592,6 +620,10 @@ bool StreamOutWorkerLogic::write(size_t clientSize, StreamDescriptor::Reply* rep
                 status != ::android::OK) {
                 fatal = true;
                 LOG(ERROR) << __func__ << ": write failed: " << status;
+            }
+            auto streamDataProcessor = mContext->getStreamDataProcessor().lock();
+            if (streamDataProcessor != nullptr) {
+                streamDataProcessor->process(mDataBuffer.get(), actualFrameCount * frameSize);
             }
         } else {
             if (mContext->getAsyncCallback() == nullptr) {
@@ -632,16 +664,34 @@ ndk::ScopedAStatus StreamCommonImpl::initInstance(
          isBitPositionFlagSet(flags.template get<AudioIoFlags::Tag::input>(),
                               AudioInputFlags::FAST)) ||
         (flags.getTag() == AudioIoFlags::Tag::output &&
-         isBitPositionFlagSet(flags.template get<AudioIoFlags::Tag::output>(),
-                              AudioOutputFlags::FAST))) {
+         (isBitPositionFlagSet(flags.template get<AudioIoFlags::Tag::output>(),
+                               AudioOutputFlags::FAST) ||
+          isBitPositionFlagSet(flags.template get<AudioIoFlags::Tag::output>(),
+                               AudioOutputFlags::SPATIALIZER)))) {
         // FAST workers should be run with a SCHED_FIFO scheduler, however the host process
         // might be lacking the capability to request it, thus a failure to set is not an error.
         pid_t workerTid = mWorker->getTid();
         if (workerTid > 0) {
-            struct sched_param param;
-            param.sched_priority = 3;  // Must match SchedulingPolicyService.PRIORITY_MAX (Java).
+            constexpr int32_t kRTPriorityMin = 1;  // SchedulingPolicyService.PRIORITY_MIN (Java).
+            constexpr int32_t kRTPriorityMax = 3;  // SchedulingPolicyService.PRIORITY_MAX (Java).
+            int priorityBoost = kRTPriorityMax;
+            if (flags.getTag() == AudioIoFlags::Tag::output &&
+                isBitPositionFlagSet(flags.template get<AudioIoFlags::Tag::output>(),
+                                     AudioOutputFlags::SPATIALIZER)) {
+                const int32_t sptPrio =
+                        property_get_int32("audio.spatializer.priority", kRTPriorityMin);
+                if (sptPrio >= kRTPriorityMin && sptPrio <= kRTPriorityMax) {
+                    priorityBoost = sptPrio;
+                } else {
+                    LOG(WARNING) << __func__ << ": invalid spatializer priority: " << sptPrio;
+                    return ndk::ScopedAStatus::ok();
+                }
+            }
+            struct sched_param param = {
+                    .sched_priority = priorityBoost,
+            };
             if (sched_setscheduler(workerTid, SCHED_FIFO | SCHED_RESET_ON_FORK, &param) != 0) {
-                PLOG(WARNING) << __func__ << ": failed to set FIFO scheduler for a fast thread";
+                PLOG(WARNING) << __func__ << ": failed to set FIFO scheduler and priority";
             }
         } else {
             LOG(WARNING) << __func__ << ": invalid worker tid: " << workerTid;
@@ -836,7 +886,7 @@ ndk::ScopedAStatus StreamIn::setHwGain(const std::vector<float>& in_channelGains
 }
 
 StreamInHwGainHelper::StreamInHwGainHelper(const StreamContext* context)
-    : mChannelCount(getChannelCount(context->getChannelLayout())) {}
+    : mChannelCount(getChannelCount(context->getChannelLayout())), mHwGains(mChannelCount, 0.0f) {}
 
 ndk::ScopedAStatus StreamInHwGainHelper::getHwGainImpl(std::vector<float>* _aidl_return) {
     *_aidl_return = mHwGains;
@@ -967,7 +1017,8 @@ ndk::ScopedAStatus StreamOut::selectPresentation(int32_t in_presentationId, int3
 }
 
 StreamOutHwVolumeHelper::StreamOutHwVolumeHelper(const StreamContext* context)
-    : mChannelCount(getChannelCount(context->getChannelLayout())) {}
+    : mChannelCount(getChannelCount(context->getChannelLayout())),
+      mHwVolumes(mChannelCount, 0.0f) {}
 
 ndk::ScopedAStatus StreamOutHwVolumeHelper::getHwVolumeImpl(std::vector<float>* _aidl_return) {
     *_aidl_return = mHwVolumes;

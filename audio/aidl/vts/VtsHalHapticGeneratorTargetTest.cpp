@@ -18,7 +18,6 @@
 #include <utility>
 #include <vector>
 
-#include <aidl/Vintf.h>
 #define LOG_TAG "VtsHalHapticGeneratorTargetTest"
 #include <android-base/logging.h>
 #include <android/binder_enums.h>
@@ -33,6 +32,7 @@ using aidl::android::hardware::audio::effect::HapticGenerator;
 using aidl::android::hardware::audio::effect::IEffect;
 using aidl::android::hardware::audio::effect::IFactory;
 using aidl::android::hardware::audio::effect::Parameter;
+using android::hardware::audio::common::testing::detail::TestExecutionTracer;
 
 /**
  * Here we focus on specific parameter checking, general IEffect interfaces testing performed in
@@ -88,7 +88,7 @@ class HapticGeneratorParamTest : public ::testing::TestWithParam<HapticGenerator
         ASSERT_NE(nullptr, mFactory);
         ASSERT_NO_FATAL_FAILURE(create(mFactory, mEffect, mDescriptor));
 
-        Parameter::Common common = EffectHelper::createParamCommon(
+        Parameter::Common common = createParamCommon(
                 0 /* session */, 1 /* ioHandle */, 44100 /* iSampleRate */, 44100 /* oSampleRate */,
                 kInputFrameCount /* iFrameCount */, kOutputFrameCount /* oFrameCount */);
         IEffect::OpenEffectReturn ret;
@@ -225,7 +225,7 @@ INSTANTIATE_TEST_SUITE_P(
                     std::to_string(std::get<PARAM_VIBRATION_INFORMATION_MAX_AMPLITUDE>(info.param));
             std::string name = "Implementor_" + descriptor.common.implementor + "_name_" +
                                descriptor.common.name + "_UUID_" +
-                               descriptor.common.id.uuid.toString() + "_hapticScaleId" +
+                               toString(descriptor.common.id.uuid) + "_hapticScaleId" +
                                hapticScaleID + "_hapticScaleVibScale" + hapticScaleVibScale +
                                "_resonantFrequency" + resonantFrequency + "_qFactor" + qFactor +
                                "_maxAmplitude" + maxAmplitude;
@@ -248,7 +248,7 @@ class HapticGeneratorScalesTest : public ::testing::TestWithParam<HapticGenerato
         ASSERT_NE(nullptr, mFactory);
         ASSERT_NO_FATAL_FAILURE(create(mFactory, mEffect, mDescriptor));
 
-        Parameter::Common common = EffectHelper::createParamCommon(
+        Parameter::Common common = createParamCommon(
                 0 /* session */, 1 /* ioHandle */, 44100 /* iSampleRate */, 44100 /* oSampleRate */,
                 kInputFrameCount /* iFrameCount */, kOutputFrameCount /* oFrameCount */);
         IEffect::OpenEffectReturn ret;
@@ -422,7 +422,7 @@ INSTANTIATE_TEST_SUITE_P(
             auto descriptor = std::get<PARAM_INSTANCE_NAME>(info.param).second;
             std::string name = "Implementor_" + descriptor.common.implementor + "_name_" +
                                descriptor.common.name + "_UUID_" +
-                               descriptor.common.id.uuid.toString();
+                               toString(descriptor.common.id.uuid);
             std::replace_if(
                     name.begin(), name.end(), [](const char c) { return !std::isalnum(c); }, '_');
             return name;
@@ -431,6 +431,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(HapticGeneratorScalesTest);
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new TestExecutionTracer());
     ABinderProcess_setThreadPoolMaxThreadCount(1);
     ABinderProcess_startThreadPool();
     return RUN_ALL_TESTS();

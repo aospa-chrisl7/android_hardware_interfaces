@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <aidl/Vintf.h>
 #define LOG_TAG "VtsHalAGC1ParamTest"
 #include <android-base/logging.h>
 
@@ -28,6 +27,7 @@ using aidl::android::hardware::audio::effect::getEffectTypeUuidAutomaticGainCont
 using aidl::android::hardware::audio::effect::IEffect;
 using aidl::android::hardware::audio::effect::IFactory;
 using aidl::android::hardware::audio::effect::Parameter;
+using android::hardware::audio::common::testing::detail::TestExecutionTracer;
 
 enum ParamName {
     PARAM_INSTANCE_NAME,
@@ -53,7 +53,7 @@ class AGC1ParamTest : public ::testing::TestWithParam<AGC1ParamTestParam>, publi
         ASSERT_NO_FATAL_FAILURE(create(mFactory, mEffect, mDescriptor));
 
         Parameter::Specific specific = getDefaultParamSpecific();
-        Parameter::Common common = EffectHelper::createParamCommon(
+        Parameter::Common common = createParamCommon(
                 0 /* session */, 1 /* ioHandle */, 44100 /* iSampleRate */, 44100 /* oSampleRate */,
                 kInputFrameCount /* iFrameCount */, kOutputFrameCount /* oFrameCount */);
         IEffect::OpenEffectReturn ret;
@@ -189,6 +189,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AGC1ParamTest);
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new TestExecutionTracer());
     ABinderProcess_setThreadPoolMaxThreadCount(1);
     ABinderProcess_startThreadPool();
     return RUN_ALL_TESTS();

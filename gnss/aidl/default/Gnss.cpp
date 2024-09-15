@@ -115,7 +115,9 @@ ScopedAStatus Gnss::start() {
     mGnssMeasurementInterface->setLocationEnabled(true);
     this->reportGnssStatusValue(IGnssCallback::GnssStatusValue::SESSION_BEGIN);
     mThread = std::thread([this]() {
-        this->reportSvStatus();
+        if (!mGnssMeasurementEnabled || mMinIntervalMs <= mGnssMeasurementIntervalMs) {
+            this->reportSvStatus();
+        }
         if (!mFirstFixReceived) {
             std::this_thread::sleep_for(std::chrono::milliseconds(TTFF_MILLIS));
             mFirstFixReceived = true;
@@ -124,7 +126,9 @@ ScopedAStatus Gnss::start() {
             if (!mIsActive) {
                 break;
             }
-            this->reportSvStatus();
+            if (!mGnssMeasurementEnabled || mMinIntervalMs <= mGnssMeasurementIntervalMs) {
+                this->reportSvStatus();
+            }
             this->reportNmea();
 
             auto currentLocation = getLocationFromHW();
@@ -158,12 +162,13 @@ ScopedAStatus Gnss::close() {
     return ScopedAStatus::ok();
 }
 
-void Gnss::reportLocation(const GnssLocation& location) const {
+void Gnss::reportLocation(const GnssLocation& location) {
     std::unique_lock<std::mutex> lock(mMutex);
     if (sGnssCallback == nullptr) {
         ALOGE("%s: GnssCallback is null.", __func__);
         return;
     }
+    mLastLocation = std::make_shared<GnssLocation>(location);
     auto status = sGnssCallback->gnssLocationCb(location);
     if (!status.isOk()) {
         ALOGE("%s: Unable to invoke gnssLocationCb", __func__);
@@ -355,7 +360,6 @@ ScopedAStatus Gnss::getExtensionGnssNavigationMessage(
 
 ndk::ScopedAStatus Gnss::getExtensionGnssDebug(std::shared_ptr<IGnssDebug>* iGnssDebug) {
     ALOGD("Gnss::getExtensionGnssDebug");
-
     *iGnssDebug = SharedRefBase::make<GnssDebug>();
     return ndk::ScopedAStatus::ok();
 }
@@ -384,6 +388,18 @@ ndk::ScopedAStatus Gnss::getExtensionMeasurementCorrections(
     *iMeasurementCorrections =
             SharedRefBase::make<measurement_corrections::MeasurementCorrectionsInterface>();
     return ndk::ScopedAStatus::ok();
+}
+
+void Gnss::setGnssMeasurementEnabled(const bool enabled) {
+    mGnssMeasurementEnabled = enabled;
+}
+
+void Gnss::setGnssMeasurementInterval(const long intervalMs) {
+    mGnssMeasurementIntervalMs = intervalMs;
+}
+
+std::shared_ptr<GnssLocation> Gnss::getLastLocation() const {
+    return mLastLocation;
 }
 
 }  // namespace aidl::android::hardware::gnss

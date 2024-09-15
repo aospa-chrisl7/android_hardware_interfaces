@@ -27,12 +27,14 @@ namespace aidl::android::hardware::audio::core {
 // provide necessary overrides for all interface methods omitted here.
 class ModuleAlsa : public Module {
   public:
-    explicit ModuleAlsa(Module::Type type) : Module(type) {}
+    ModuleAlsa(Type type, std::unique_ptr<Configuration>&& config)
+        : Module(type, std::move(config)) {}
 
   protected:
     // Extension methods of 'Module'.
     ndk::ScopedAStatus populateConnectedDevicePort(
-            ::aidl::android::media::audio::common::AudioPort* audioPort) override;
+            ::aidl::android::media::audio::common::AudioPort* audioPort,
+            int32_t nextPortId) override;
 };
 
 }  // namespace aidl::android::hardware::audio::core

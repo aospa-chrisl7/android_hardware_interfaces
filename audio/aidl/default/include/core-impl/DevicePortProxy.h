@@ -25,10 +25,9 @@
 #include <aidl/android/hardware/audio/common/SourceMetadata.h>
 #include <aidl/android/hardware/bluetooth/audio/BluetoothAudioStatus.h>
 #include <aidl/android/hardware/bluetooth/audio/PcmConfiguration.h>
+#include <aidl/android/hardware/bluetooth/audio/PresentationPosition.h>
 #include <aidl/android/hardware/bluetooth/audio/SessionType.h>
 #include <aidl/android/media/audio/common/AudioDeviceDescription.h>
-
-#include "BluetoothAudioSessionControl.h"
 
 namespace android::bluetooth::audio::aidl {
 
@@ -74,12 +73,7 @@ class BluetoothAudioPort {
      * Bluetooth stack
      */
     virtual bool loadAudioConfig(
-            ::aidl::android::hardware::bluetooth::audio::PcmConfiguration*) const = 0;
-
-    /**
-     * WAR to support Mono mode / 16 bits per sample
-     */
-    virtual void forcePcmStereoToMono(bool) = 0;
+            ::aidl::android::hardware::bluetooth::audio::PcmConfiguration&) = 0;
 
     /**
      * When the Audio framework / HAL wants to change the stream state, it invokes
@@ -146,7 +140,7 @@ class BluetoothAudioPort {
 
     virtual bool isLeAudio() const = 0;
 
-    virtual bool getPreferredDataIntervalUs(size_t*) const = 0;
+    virtual bool getPreferredDataIntervalUs(size_t&) const = 0;
 
     virtual size_t writeData(const void*, size_t) const { return 0; }
 
@@ -163,10 +157,8 @@ class BluetoothAudioPortAidl : public BluetoothAudioPort {
 
     void unregisterPort() override;
 
-    bool loadAudioConfig(::aidl::android::hardware::bluetooth::audio::PcmConfiguration* audio_cfg)
-            const override;
-
-    void forcePcmStereoToMono(bool force) override { mIsStereoToMono = force; }
+    bool loadAudioConfig(
+            ::aidl::android::hardware::bluetooth::audio::PcmConfiguration& audio_cfg) override;
 
     bool standby() override;
     bool start() override;
@@ -194,7 +186,7 @@ class BluetoothAudioPortAidl : public BluetoothAudioPort {
 
     bool isLeAudio() const override;
 
-    bool getPreferredDataIntervalUs(size_t* interval_us) const override;
+    bool getPreferredDataIntervalUs(size_t& interval_us) const override;
 
   protected:
     uint16_t mCookie;
@@ -229,6 +221,9 @@ class BluetoothAudioPortAidl : public BluetoothAudioPort {
 
 class BluetoothAudioPortAidlOut : public BluetoothAudioPortAidl {
   public:
+    bool loadAudioConfig(
+            ::aidl::android::hardware::bluetooth::audio::PcmConfiguration& audio_cfg) override;
+
     // The audio data path to the Bluetooth stack (Software encoding)
     size_t writeData(const void* buffer, size_t bytes) const override;
 };

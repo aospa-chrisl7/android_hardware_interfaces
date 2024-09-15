@@ -24,8 +24,8 @@
 
 namespace aidl::android::hardware::health {
 
-LinkedCallback* LinkedCallback::Make(std::shared_ptr<Health> service,
-                                     std::shared_ptr<IHealthInfoCallback> callback) {
+::android::base::Result<LinkedCallback*> LinkedCallback::Make(
+        std::shared_ptr<Health> service, std::shared_ptr<IHealthInfoCallback> callback) {
     LinkedCallback* ret(new LinkedCallback());
     // pass ownership of this object to the death recipient
     binder_status_t linkRet =
@@ -33,7 +33,7 @@ LinkedCallback* LinkedCallback::Make(std::shared_ptr<Health> service,
                                  reinterpret_cast<void*>(ret));
     if (linkRet != ::STATUS_OK) {
         LOG(WARNING) << __func__ << "Cannot link to death: " << linkRet;
-        return nullptr;
+        return ::android::base::Error(-linkRet);
     }
     ret->service_ = service;
     ret->callback_ = callback;
